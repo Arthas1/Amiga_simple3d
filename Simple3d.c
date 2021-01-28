@@ -1,3 +1,8 @@
+// kompilacja:
+// m68k-amigaos-gcc wl.c -o wl -Os -Wno-incompatible-pointer-types
+
+// -O0 -g3 -Wall -c -fmessage-length=0
+
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <intuition/intuition.h>
@@ -8,27 +13,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <devices/timer.h>
-#include <clib/exec_protos.h>
+//#include <clib/exec_protos.h>
 #include <clib/timer_protos.h>
 #include <clib/utility_protos.h>
-#include <dos/dos.h>
-#include <proto/dos.h>
-// #include "Data3d.h"
+//#include <dos/dos.h>
+//#include <proto/dos.h>
 
-#include <libraries/mathffp.h>
-#include <clib/mathffp_protos.h>
-#include <clib/mathtrans_protos.h>
+//#include <math.h>
+//#define PI 3.1415
+//#include <libraries/mathffp.h>
+//#include <clib/mathffp_protos.h>
+//#include <clib/mathtrans_protos.h>
 
-struct Library *MathTransBase;
 
 // time
-struct Library *TimerBase;
+struct Device *TimerBase;
 struct Library *UtilityBase;
 
 /* characteristics of the screen */
+
 #define SCR_WIDTH  (640)
-#define SCR_HEIGHT (200)
-#define SCR_DEPTH    (4)   //
+#define SCR_HEIGHT (400)
+#define SCR_DEPTH    (3)
+//
 /* Prototypes for our functions */
 
 VOID runDBuff(struct Screen*, struct BitMap**);
@@ -39,6 +46,35 @@ VOID freePlanes(struct BitMap*, LONG, LONG, LONG);
 struct Library *IntuitionBase = NULL;
 struct Library *GfxBase = NULL;
 
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+// Simple pre-calculated sin and cos implementation
+
+float sintab[91] = {0.000000,0.017452,0.034899,0.052336,0.069756,0.087156,0.104528,0.121869,0.139173,0.156434,0.173648,0.190809,0.207912,0.224951,0.241922,0.258819,0.275637,0.292372,0.309017,0.325568,0.342020,0.358368,0.374607,0.390731,0.406737,0.422618,0.438371,0.453990,0.469472,0.484810,0.500000,0.515038,0.529919,0.544639,0.559193,0.573576,0.587785,0.601815,0.615661,0.629320,0.642788,0.656059,0.669131,0.681998,0.694658,0.707107,0.719340,0.731354,0.743145,0.754710,0.766044,0.777146,0.788011,0.798636,0.809017,0.819152,0.829038,0.838671,0.848048,0.857167,0.866025,0.874620,0.882948,0.891007,0.898794,0.906308,0.913545,0.920505,0.927184,0.933580,0.939693,0.945519,0.951057,0.956305,0.961262,0.965926,0.970296,0.974370,0.978148,0.981627,0.984808,0.987688,0.990268,0.992546,0.994522,0.996195,0.997564,0.998630,0.999391,0.999848,1.0};
+
+// input: angle in degrees
+float ksin(int x) {
+	if (x<0) x=(-x+180);
+	if (x>=360) x%=360;
+	if (x<=90) {
+		return sintab[x];
+	} else if (x<=180) {
+		return sintab[180-x];
+	} else if (x<=270) {
+		return -sintab[x-180];
+	} else {
+		return -sintab[360-x];
+	}
+}
+
+// input: angle in degrees
+float kcos(int x) {
+	return ksin(x+90);
+}
+// ------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------
+
+
 /*
  ** Main routine.  Setup for using the double buffered screen.
  ** Clean up all resources when done or on any error.
@@ -48,6 +84,8 @@ VOID main(int argc, char **argv) {
 	struct BitMap **myBitMaps;
 	struct Screen *screen;
 	struct NewScreen myNewScreen;
+	struct AreaInfo ainfo = {0};
+
 
 IntuitionBase = OpenLibrary("intuition.library", 33L);
 if (IntuitionBase != NULL) {
@@ -65,10 +103,10 @@ if (IntuitionBase != NULL) {
 			myNewScreen.Depth = SCR_DEPTH;
 			myNewScreen.DetailPen = 0;
 			myNewScreen.BlockPen = 1;
-			myNewScreen.ViewModes = HIRES;
+			myNewScreen.ViewModes = HIRES | LACE;
 			myNewScreen.Type = CUSTOMSCREEN | CUSTOMBITMAP | SCREENQUIET;
 			myNewScreen.Font = NULL;
-			myNewScreen.DefaultTitle = NULL;
+			myNewScreen.DefaultTitle = "Simple 3D";
 			myNewScreen.Gadgets = NULL;
 			myNewScreen.CustomBitMap = myBitMaps[0];
 			screen = OpenScreen(&myNewScreen);
@@ -88,8 +126,9 @@ if (IntuitionBase != NULL) {
 }
 }
 
-// setupBitMaps(): allocate the bit maps for a double buffered screen.
-
+/*
+ ** setupBitMaps(): allocate the bit maps for a double buffered screen.
+ */
 struct BitMap** setupBitMaps(LONG depth, LONG width, LONG height) {
 /* this must be static -- it cannot go away when the routine exits. */
 static struct BitMap *myBitMaps[2];
@@ -103,8 +142,8 @@ if (myBitMaps[0] != NULL) {
 		InitBitMap(myBitMaps[0], depth, width, height);
 		InitBitMap(myBitMaps[1], depth, width, height);
 
-		if (NULL != setupPlanes(myBitMaps[0], depth, width, height)) {
-			if (NULL != setupPlanes(myBitMaps[1], depth, width, height))
+		if (0 != setupPlanes(myBitMaps[0], depth, width, height)) {
+			if (0 != setupPlanes(myBitMaps[1], depth, width, height))
 				return (myBitMaps);
 
 			freePlanes(myBitMaps[0], depth, width, height);
@@ -116,84 +155,71 @@ if (myBitMaps[0] != NULL) {
 return (NULL);
 }
 
-// runDBuff(): loop through a number of iterations of drawing into
-// ** alternate frames of the double-buffered screen.  Note that the
-// ** object is drawn in color 1.
-
+/*
+ ** runDBuff(): loop through a number of iterations of drawing into
+ ** alternate frames of the double-buffered screen.  Note that the
+ ** object is drawn in color 1.
+ */
 VOID runDBuff(struct Screen *screen, struct BitMap **myBitMaps) {
+
 
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-	FLOAT x1, x2,x3, y1, y2, y3, z1, z2, z3;
 
-	FLOAT x1Projected, y1Projected, z1Projected, x2Projected, y2Projected, z2Projected, x3Projected, y3Projected, z3Projected;
+	// InitArea(&ainfo, areabuf, 200 * 2 / 5);
 
-	FLOAT x1Rotated, x2Rotated, x3Rotated, y1Rotated, y2Rotated,y3Rotated, z1Rotated, z2Rotated, z3Rotated;
+	float x_orig, y_orig, z_orig, x1, x2,x3, y1, y2, y3, z1, z2, z3;
 
-	FLOAT x1RotatedX, x2RotatedX, x3RotatedX, y1RotatedX, y2RotatedX, y3RotatedX, z1RotatedX, z2RotatedX, z3RotatedX;
+	const int SHOW_POLYGONS = 12;
 
-	FLOAT fTheta;
-
-	FLOAT matProj[4][4]={{0,0,0,0},{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-
-	FLOAT matRotZ[4][4]={{0,0,0,0},{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-
-	FLOAT matRotX[4][4]={{0,0,0,0},{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-
-	FLOAT mesh[12][9] = {
+	float mesh[12][9] = {
 
 			// SOUTH
-			{ 0.0f, 0.0f, 0.0f,    0.0f, 1.0f, 0.0f,    1.0f, 1.0f, 0.0f },
-			{ 0.0f, 0.0f, 0.0f,    1.0f, 1.0f, 0.0f,    1.0f, 0.0f, 0.0f },
+			{ 0.0f, 0.0f, 0.0f,    0.0f, 150.0f, 0.0f,    150.0f, 150.0f, 0.0f },
+			{ 0.0f, 0.0f, 0.0f,    150.0f, 150.0f, 0.0f,    150.0f, 0.0f, 0.0f },
 			// EAST
-			{ 1.0f, 0.0f, 0.0f,    1.0f, 1.0f, 0.0f,    1.0f, 1.0f, 1.0f },
-			{ 1.0f, 0.0f, 0.0f,   1.0f, 1.0f, 1.0f,    1.0f, 0.0f, 1.0f },
+			{ 150.0f, 0.0f, 0.0f,    150.0f, 150.0f, 0.0f,    150.0f, 150.0f, 150.0f },
+			{ 150.0f, 0.0f, 0.0f,   150.0f, 150.0f, 150.0f,    150.0f, 0.0f, 150.0f },
 			// NORTH
-			{ 1.0f, 0.0f, 1.0f,    1.0f, 1.0f, 1.0f,    0.0f, 1.0f, 1.0f },
-			{ 1.0f, 0.0f, 1.0f,    0.0f, 1.0f, 1.0f,    0.0f, 0.0f, 1.0f },
+			{ 150.0f, 0.0f, 150.0f,    150.0f, 150.0f, 150.0f,    0.0f, 150.0f, 150.0f },
+			{ 150.0f, 0.0f, 150.0f,    0.0f, 150.0f, 150.0f,    0.0f, 0.0f, 150.0f },
 			// WEST
-			{ 0.0f, 0.0f, 1.0f,    0.0f, 1.0f, 1.0f,    0.0f, 1.0f, 0.0f },
-			{ 0.0f, 0.0f, 1.0f,    0.0f, 1.0f, 0.0f,    0.0f, 0.0f, 0.0f },
+			{ 0.0f, 0.0f, 150.0f,    0.0f, 150.0f, 150.0f,    0.0f, 150.0f, 0.0f },
+			{ 0.0f, 0.0f, 150.0f,    0.0f, 150.0f, 0.0f,    0.0f, 0.0f, 0.0f },
 			// TOP
-			{ 0.0f, 1.0f, 0.0f,    0.0f, 1.0f, 1.0f,    1.0f, 1.0f, 1.0f },
-			{ 0.0f, 1.0f, 0.0f,   1.0f, 1.0f, 1.0f,    1.0f, 1.0f, 0.0f },
+			{ 0.0f, 150.0f, 0.0f,    0.0f, 150.0f, 150.0f,    150.0f, 150.0f, 150.0f },
+			{ 0.0f, 150.0f, 0.0f,   150.0f, 150.0f, 150.0f,    150.0f, 150.0f, 0.0f },
 			// BOTTOM
-			{ 1.0f, 0.0f, 1.0f,    0.0f, 0.0f, 1.0f,    0.0f, 0.0f, 0.0f },
-			{ 1.0f, 0.0f, 1.0f,    0.0f, 0.0f, 0.0f,    1.0f, 0.0f, 0.0f }
+			{ 150.0f, 0.0f, 150.0f,    0.0f, 0.0f, 150.0f,    0.0f, 0.0f, 0.0f },
+			{ 150.0f, 0.0f, 150.0f,    0.0f, 0.0f, 0.0f,    150.0f, 0.0f, 0.0f }
+
+
 	};
+
+	float result[12][9] = {0};
+
+
 	// Projection Matrix
-	FLOAT fNear = 0.1f;
-	FLOAT fFar = 1000.0f;
-	FLOAT fFov = 90.0f;
-	FLOAT fAspectRatio = 640 / 400;  										// screen size
-	FLOAT fFovRad = 1.0f / tan(fFov * 0.5f / 180.0f * 3.14159f);
 
-			matProj[0][0] = 	fAspectRatio * fFovRad;				//	0.1423882205;   // fAspectRatio * fFovRad;
-			matProj[0][1] = 0.0f;
-			matProj[0][2] = 0.0f;
-			matProj[0][3] = 0.0f;
-			matProj[1][0] = 0.0f;
-			matProj[1][1] = 	fFovRad;							//	0.0444963189; //  fFovRad;
-			matProj[1][2] = 0.0f;
-			matProj[1][3] = 0.0f;
-			matProj[2][0] = 0.0f;
-			matProj[2][1] = 0.0f;
-			matProj[2][2] = 	fFar / (fFar - fNear);				//	1.00010001; //fFar / (fFar - fNear);
-			matProj[2][3] = 1.0f;
-			matProj[3][0] = 0.0f;
-			matProj[3][1] = 0.0f;
-			matProj[3][2] = 	(-fFar * fNear) / (fFar - fNear); 	//	-0.100010001;//(-fFar * fNear) / (fFar - fNear);
-			matProj[3][3] = 0.0f;
+			float fNear = 0.1f;
+			float fFar = 1000.0f;
+			float fFov = 90.0f;
+			float fAspectRatio = (SCR_WIDTH/640) / (SCR_HEIGHT/400);
+			float fFovRad = 1.0f;
 
-WORD ktr, xpos, ypos;
+int ktr;
 WORD toggleFrame;
-struct Rastport *rport;
+
+struct RastPort *rport;
 rport = &screen->RastPort;
 int frameNo = 0;
+
 DOUBLE fps;
+
 struct ClockData *clockdata;
 struct timerequest *tr;
 struct timeval *tv;
+
 LONG dilatationTime;
 LONG startTime;
 LONG endTime;
@@ -208,170 +234,134 @@ if (UtilityBase = OpenLibrary("utility.library", 37)) {
 
 					GetSysTime(tv);                     // check initial time
 					startTime = tv->tv_micro;
-					toggleFrame = 0;
-					SetAPen(&(screen->RastPort), 1);
 
-					char str[123];
-					char str1[123];
-					char slot1[123];
-					char slot2[123];
-					char slot3[123];
-					char slot4[123];
-					char slot5[123];
-					char slot6[123];
-					char slot7[123];
-					char slot8[123];
-					char slot9[123];
-					char slot10[123];
-					char slot11[123];
-					char slot12[123];
+					char str[123], str1[123];
+
+					char slot1[123], slot2[123], slot3[123], slot4[123], slot5[123], slot6[123], slot7[123], slot8[123] , slot9[123], slot10[123], slot11[123], slot12[123];
+
+					float angles[3][2] = {{0,0.5}, {0,0.3}, {0,0.15}};  // for all planes: { current angle, rotation speed }
+					int angle;
 
 					/* MAIN DRAWING LOOP NA 2 EKRANY ----------------------------------------------------- */
 
-					for (ktr = 1; ktr < 300; ktr++) {
+					SetRast(&(screen->RastPort), 0);
+					toggleFrame = 0;
 
-// Read polygon coords in array
+					for (ktr = 1; ktr < 350; ktr++) {
 
-						 for (int k=0; k<12; k++) {
-
-						        	x1 = mesh[k][0];
-						        	y1 = mesh[k][1];
-						        	z1 = mesh[k][2];
-						        	x2 = mesh[k][3];
-						        	y2 = mesh[k][4];
-						        	z2 = mesh[k][5];
-						        	x3 = mesh[k][6];
-						           	y3 = mesh[k][7];
-						          	z3 = mesh[k][8];
-
-						        fTheta += 1.0f * ktr; // time for incrementation
-// Transforms
-						        // Rotation Z matrix
-
-	        					matRotZ[0][0] = cos(fTheta);
-	        					matRotZ[0][1] = sin(fTheta);
-	        					matRotZ[1][0] = -sin(fTheta);
-	        					matRotZ[1][1] = cos(fTheta);
-	        					matRotZ[2][2] = 1.0f;
-	        					matRotZ[3][3] = 1.0f;
-
-	        					// Rotate Z
-
-	        					x1Rotated = x1 * matRotZ[0][0] + y1 * matRotZ[1][0] ;
-	        					y1Rotated = x1 * matRotZ[0][1] + y1 * matRotZ[1][1] ;
-	        					z1Rotated = z1 * matRotZ[2][2];
-	        					FLOAT w11 = matRotZ[3][3];
-	        					if (w11 != 0.0f)		{		x1Rotated /= w11; y1Rotated /= w11; z1Rotated /= w11; }
-
-	        					x2Rotated = x2 * matRotZ[0][0] + y2 * matRotZ[1][0];
-	        					y2Rotated = x2 * matRotZ[0][1] + y2 * matRotZ[1][1];
-	        					z2Rotated = z2 * matRotZ[2][2] ;
-	        					FLOAT w12 = matRotZ[3][3];
-	        					if (w12 != 0.0f)		{		x2Rotated /= w12; y2Rotated /= w12; z3Rotated /= w12; }
-
-	        					x3Rotated = x3 * matRotZ[0][0] + y3 * matRotZ[1][0];
-	        					y3Rotated = x3 * matRotZ[0][1] + y3 * matRotZ[1][1];
-	        					z3Rotated = z3 * matRotZ[2][2] + matRotZ[3][2];
-	        					FLOAT w13 = matRotZ[3][3];
-	        					if (w13 != 0.0f)		{		x3Rotated /= w13; y3Rotated /= w13; z3Rotated /= w13; }
-
-	        					// Rotation X matrix
-
-	        					matRotX[0][0] = 1.0f;
-	        					matRotX[1][1] = cos(fTheta * 0.5f);
-	        					matRotX[1][2] = sin(fTheta * 0.5f);
-	        					matRotX[2][1] = -sin(fTheta * 0.5f);
-	        					matRotX[2][2] = cos(fTheta * 0.5f);
-	        					matRotX[3][3] = 1.0f;
-
-	        							// Rotate X
-
-	        					x1RotatedX = x1Rotated * matRotX[0][0] + y1Rotated * matRotX[1][0] + z1Rotated * matRotX[2][0] + matRotX[3][0];
-	        					y1RotatedX = x1Rotated * matRotX[0][1] + y1Rotated * matRotX[1][1] + z1Rotated * matRotX[2][1] + matRotX[3][1];
-	        					z1RotatedX = x1Rotated * matRotX[0][2] + y1Rotated * matRotX[1][2] + z1Rotated * matRotX[2][2] + matRotX[3][2];
-	        					FLOAT w111 = x1Rotated * matRotX[0][3] + y1Rotated * matRotX[1][3] + z1Rotated * matRotX[2][3] + matRotX[3][3];
-	        					if (w111 != 0.0f)		{		x1RotatedX /= w111; y1RotatedX /= w111; z1RotatedX /= w111; }
-
-	        					x2RotatedX = x2Rotated * matRotX[0][0] + y2Rotated * matRotX[1][0] + z2Rotated * matRotX[2][0] + matRotX[3][0];
-	        					y2RotatedX = x2Rotated * matRotX[0][1] + y2Rotated * matRotX[1][1] + z2Rotated * matRotX[2][1] + matRotX[3][1];
-	        					z2RotatedX = x2Rotated * matRotX[0][2] + y2Rotated * matRotX[1][2] + z2Rotated * matRotX[2][2] + matRotX[3][2];
-	        					FLOAT w112 = x2Rotated * matRotX[0][3] + y2Rotated * matRotX[1][3] + z2Rotated * matRotX[2][3] + matRotX[3][3];
-	        					if (w112 != 0.0f)		{		x2RotatedX /= w112; y2RotatedX /= w112; z3RotatedX /= w112; }
-
-	        					x3RotatedX = x3Rotated * matRotX[0][0] + y3Rotated * matRotX[1][0] + z3Rotated * matRotX[2][0] + matRotX[3][0];
-	        					y3RotatedX = x3Rotated * matRotX[0][1] + y3Rotated * matRotX[1][1] + z3Rotated * matRotX[2][1] + matRotX[3][1];
-	        					z3RotatedX = x3Rotated * matRotX[0][2] + y3Rotated * matRotX[1][2] + z3Rotated * matRotX[2][2] + matRotX[3][2];
-	        					FLOAT w113 = x3Rotated * matRotX[0][3] + y3Rotated * matRotX[1][3] + z3Rotated * matRotX[2][3] + matRotX[3][3];
-	        					if (w113 != 0.0f)		{		x3RotatedX /= w113; y3RotatedX /= w113; z3RotatedX /= w113; }
-
-// Offset into the screen
-
-z1RotatedX+=3.0f;			// this should be correct
-z2RotatedX+=3.0f;
-z3RotatedX+=3.0f;
-
-// Project triangles from 3D --> 2D
-
-x1Projected = x1RotatedX * matProj[0][0];
-y1Projected = y1RotatedX * matProj[1][1];
-z1Projected = z1RotatedX * matProj[2][2] + matProj[3][2];
-FLOAT w1 = z1RotatedX * matProj[2][3] + matProj[3][3];
-if (w1 != 0.0f)		{		x1Projected /= w1; y1Projected /= w1; z1Projected /= w1; }
-
-x2Projected = x2RotatedX * matProj[0][0];
-y2Projected = y2RotatedX * matProj[1][1];
-z2Projected = z2RotatedX * matProj[2][2] + matProj[3][2];
-FLOAT w2 = z2RotatedX * matProj[2][3] + matProj[3][3];
-if (w2 != 0.0f)		{		x2Projected /= w2; y2Projected /= w2; z2Projected /= w2; }
-
-x3Projected =x3RotatedX * matProj[0][0];
-y3Projected = y3RotatedX * matProj[1][1];
-z3Projected = z3RotatedX * matProj[2][2] + matProj[3][2];
-FLOAT w3 = z3RotatedX * matProj[2][3] + matProj[3][3];
-if (w3 != 0.0f)		{		x3Projected /= w3; y3Projected /= w3; z3Projected /= w3; }
-
-x1Projected += 1.0f; y1Projected += 1.0f;
-x2Projected += 1.0f; y2Projected += 1.0f;
-x3Projected += 1.0f; y3Projected += 1.0f;
-
-x1Projected*= 0.4f * 640;
-y1Projected*= 0.4f * 200;
-x2Projected*= 0.4f * 640;
-y2Projected*= 0.4f * 200;
-x3Projected*= 0.4f * 640;
-y3Projected*= 0.4f * 200;
-
-// RASTERISE -------------------------------------------------
-								SetAPen(&(screen->RastPort), 1);
-								   Move(&(screen->RastPort), x1Projected, y1Projected);
-								   Draw(&(screen->RastPort), x2Projected, y2Projected);
-								   Draw(&(screen->RastPort), x3Projected, y3Projected);
-								   Draw(&(screen->RastPort), x1Projected, y1Projected);
-						        }
-
-						frameNo++; // frame counter
 
 						/* switch the bitmap so that we are drawing into the correct place */
 						screen->RastPort.BitMap = myBitMaps[toggleFrame];
-						screen->ViewPort.RasInfo->BitMap =
-								myBitMaps[toggleFrame];
+						screen->ViewPort.RasInfo->BitMap =	myBitMaps[toggleFrame];
+
+
+
+
+
+						SetAPen(rport, 1);
+
+						// najpierw obroc wszystkie trojkaty
+						for (int k=0; k<SHOW_POLYGONS; k++) {
+
+
+
+
+							// odczytaj po jednym wierzcholku
+							for (int t=0; t<3; t++) {
+								int w = t*3;
+								x_orig = mesh[k][w];
+								y_orig = mesh[k][w+1];
+								z_orig = mesh[k][w+2];
+
+// usunac potem: przesun bryle tak, zeby srodek obrotu byl w srodku a nie w jednym rogu
+x_orig -= 75;
+y_orig -= 75;
+z_orig -= 35;
+
+								// rotate in xy
+								angle = angles[0][0];
+								x1 = x_orig*kcos(angle) - y_orig*ksin(angle);
+								y1 = x_orig*ksin(angle) + y_orig*kcos(angle);
+								z1 = z_orig;
+								// rotate in xz
+								angle = angles[1][0];
+								x2 = x1*kcos(angle) - z1*ksin(angle);
+								y2 = y1;
+								z2 = x1*ksin(angle) + z1*kcos(angle);
+								// rotate in yz
+								angle = angles[2][0];
+								x3 = x2;
+								y3 = y2*kcos(angle) - z2*ksin(angle);
+								z3 = y2*ksin(angle) + z2*kcos(angle);
+
+								// perspektywa - nieco uproszczona
+								x3 = x3*(fFar-z3)/fFar;
+								y3 = y3*(fFar-z3)/fFar;
+
+								// wysrodkuj na ekranie i uwzglednij aspekt ratio i zapamietaj odwrocone trojkaty
+								result[k][w] = x3 + SCR_WIDTH/2;
+								result[k][w+1] = y3/fAspectRatio + SCR_HEIGHT/2;
+								result[k][w+2] = z3;
+
+						    }
+
+							// zupdatuj wszystkie katy obrotu
+							for (int t=0; t<3; t++) {
+								angles[t][0] += angles[t][1];
+							}
+
+						}
+
+						// posortuj tablice rezultatow po Z - TBD
+
+						// narysuj wszystkie trojkaty z tablicy
+
 
 						/* Draw the objects --------------------------------------------------------------
-						 ** Here we clear the old frame and draw a simple filled rectangle.
+						 ** Here we clear the old frame and draw a simple triangle.
 						 */
-						 SetRast(&(screen->RastPort), 0);
 
-						GetSysTime(tv);                    // check current time
+						SetRast(rport, 0);  // czyszczenie ekranu
+
+
+						for (int k=0; k<SHOW_POLYGONS; k++) {
+
+
+							// rysuj po jednym trojkacie
+
+							Move(rport, result[k][0], result[k][1]);
+
+							if (k==8 | k==9 | k==10 | k==11){ SetAPen(rport,2); } else { SetAPen(rport, 1); };
+
+
+							Draw(rport, result[k][3], result[k][4]);
+							Draw(rport, result[k][6], result[k][7]);
+							Draw(rport, result[k][0], result[k][1]);
+
+
+						}
+
+
+						frameNo++; // frame counter
+
+
+
+						GetSysTime(tv);                    // chec current time
 						endTime = tv->tv_micro;
 						dilatationTime = (endTime - startTime); // time of 1 frame
 						fps = 1000000 / dilatationTime; // ? frames per second
-//* User interface */
-						SetAPen(rport, 0xA);
-						SetDrMd(rport, JAM1);
-						itoa(fTheta, str, 10);
 
-						Move(rport, 10, 175);
-						Text(rport, str, 3);         // wyswietlaj cos z odswiezaniem
+//* User interface */
+
+						SetAPen(rport, 0xA);
+
+//						itoa(fTheta, str, 10);
+//
+//						//dtostrf(x3, 4, 3, str);
+//
+//						Move(rport, 10, 175);
+//						Text(rport, str, 3);         // wyswietlaj cos
+
 				// fps
 						Move(rport, 10, 190);
 						Text(rport, "Frame rate: ", 11);
@@ -379,67 +369,101 @@ y3Projected*= 0.4f * 200;
 						Move(rport, 90, 190);
 						Text(rport, str1, 2);              // fps d
 
-						int sxa=450, sya=10;
 
 				// Slot 1
-						Move(rport, sxa, sya);
-						sprintf(slot1, "X1 rotated Z:%f", x1Rotated);
-						Text(rport,slot1, 22);
+						Move(rport, 470, 10);
+						Text(rport, "X1: ", 4);
+						itoa(result[0][0], slot1, 10);		// x
+						Move(rport, 570, 10);
+						Text(rport,slot1, 3);
 
 				// slot 2
-						Move(rport, sxa, sya+=12);
-						sprintf(slot2, "Y1 rotated Z:%f", y1Rotated);
-						Text(rport,slot2, 22);
+						Move(rport, 470, 22);
+						Text(rport, "Y1: ", 4);
+						itoa(result[0][1], slot2, 10);		// y
+						Move(rport, 570, 22);
+						Text(rport,slot2, 3);
 
 				// slot 3
-						Move(rport, sxa, sya+=12);
-						sprintf(slot3, "Z2 rotated Z:%f", z2Rotated);
-						Text(rport,slot3, 22);
+						Move(rport, 470, 36);
+						Text(rport, "Z1: ", 4);
+						itoa(result[0][2], slot3, 10);		// z
+						Move(rport, 570, 36);
+						Text(rport,slot3, 3);
 
 				// slot 4
-						Move(rport, sxa, sya+=12);
-						sprintf(slot4, "X3 rotated X:%f", x3RotatedX);
-						Text(rport,slot4, 22);
+						Move(rport, 470, 48);
+						Text(rport, "X2: ", 4);
+						itoa(result[0][3], slot4, 10);		// x
+						Move(rport, 570, 48);
+						Text(rport,slot4, 3);
 
 				// slot 5
-						Move(rport, sxa, sya+=12);
-						sprintf(slot5, "Y2 rotated X:%f", y2RotatedX);
-						Text(rport,slot5, 22);
+						Move(rport, 470, 60);
+						Text(rport, "Y2: ", 4);
+						itoa(result[0][4], slot5, 10);		// y
+						Move(rport, 570, 60);
+						Text(rport,slot5, 3);
 
 				// slot 6
-						Move(rport, sxa, sya+=12);
-						sprintf(slot6, "Z1 rotated X:%f", z1RotatedX);
-						Text(rport,slot6, 22);
+						Move(rport, 470, 72);
+						Text(rport, "Z2: ", 4);
+						itoa(result[0][5], slot6, 10);		// z
+						Move(rport, 570, 72);
+						Text(rport,slot6, 3);
 
 				// slot 7
-						Move(rport, sxa, sya+=12);
-						sprintf(slot7, "X2 projected:%f", x2Projected);
-						Text(rport,slot7, 22);
+						Move(rport, 470, 84);
+						Text(rport, "X3: ", 4);
+						itoa(result[0][6], slot7, 10);		// x
+						Move(rport, 570, 84);
+						Text(rport,slot7, 3);
 
 				// slot 8
-						Move(rport, sxa, sya+=12);
-						sprintf(slot8, "Y2 projected:%f", y2Projected);
-						Text(rport,slot8, 22);
+						Move(rport, 470, 96);
+						Text(rport, "Y3: ", 4);
+						itoa(result[0][7], slot8, 10);		// y
+						Move(rport, 570, 96);
+						Text(rport,slot8, 3);
 
 				// slot 9
-						Move(rport, sxa, sya+=12);
-						sprintf(slot9, "Z1 projected:%f", z1Projected);
-						Text(rport,slot9, 22);
+						Move(rport, 470, 108);
+						Text(rport, "Z3: ", 4);
+						itoa(result[0][8], slot9, 10);		// z
+						Move(rport, 570, 108);
+						Text(rport,slot9, 3);
 
-				// slot 10
-						Move(rport, sxa, sya+=12);
-						sprintf(slot10, "X3 rotated Z:%f", x3Rotated);
-						Text(rport,slot10, 22);
+//				// slot 10
+//						Move(rport, 470, 120);
+//						Text(rport, "X3 rotated Z:", 13);
+//						itoa(x3Rotated, slot10, 10);
+//						Move(rport, 570, 120);
+//						Text(rport,slot10, 4);
+//
+//				// slot 11
+//						Move(rport, 470, 132);
+//						Text(rport, "Y3 rotated X:", 13);
+//						itoa(y3RotatedX, slot11, 10);
+//						Move(rport, 570, 132);
+//						Text(rport,slot11, 4);
 
-				// slot 11
-						Move(rport, sxa, sya+=12);
-						sprintf(slot11, "Y3 rotated Z:%f", y3Rotated);
-						Text(rport,slot11, 22);
 
+
+
+
+//
 						/* update the physical display to match the newly drawn bitmap. */
+
 						MakeScreen(screen); /* Tell intuition to do its stuff.          */
 						RethinkDisplay(); /* Intuition compatible MrgCop & LoadView   */
+
 						/*               it also does a WaitTOF().  */
+						// WaitTOF();
+
+
+
+
+
 
 						/* switch the frame number for next time through */
 						startTime = endTime;
@@ -455,7 +479,9 @@ y3Projected*= 0.4f * 200;
 		FreeMem(tr, sizeof(struct timerequest));
 	}
 	CloseLibrary(UtilityBase);
+
 }
+
 }
 
 /*
@@ -478,10 +504,10 @@ SHORT plane_num;
 for (plane_num = 0; plane_num < depth; plane_num++) {
 	bitMap->Planes[plane_num] = (PLANEPTR) AllocRaster(width, height);
 	if (bitMap->Planes[plane_num] != NULL)
-		BltClear(bitMap->Planes[plane_num], (width / 8) * height, 1);
+		BltClear(bitMap->Planes[plane_num], (width/8) * height, 1);
 	else {
 		freePlanes(bitMap, depth, width, height);
-		return (NULL);
+		return (0);
 	}
 }
 return (TRUE);
@@ -496,4 +522,5 @@ SHORT plane_num;
 for (plane_num = 0; plane_num < depth; plane_num++) {
 	if (bitMap->Planes[plane_num] != NULL)
 		FreeRaster(bitMap->Planes[plane_num], width, height);
-}}
+}
+}
